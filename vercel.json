@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/stringart-platform-v2.html" }
+  ]
+}
