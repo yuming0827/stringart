@@ -168,8 +168,8 @@
   .guide-current { text-align: center; padding: 1.5rem 1rem; background: #f8f9fa; border-radius: 10px; }
   .guide-step-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
   .guide-pins { font-size: 2.2rem; font-weight: 800; letter-spacing: 1px; }
-  .guide-pins .from { color: var(--accent2); }
-  .guide-pins .to { color: var(--accent); }
+  .guide-pins .from { color: #d98a00; }
+  .guide-pins .to { color: #ff2d4f; }
   .guide-pins .arr { color: var(--muted); font-size: 1.6rem; margin: 0 0.6rem; }
   .guide-controls { display: flex; gap: 0.6rem; margin-top: 1rem; flex-wrap: wrap; }
   .guide-controls .ctrl-btn { flex: 1; min-width: 110px; }
@@ -623,7 +623,7 @@
           <span style="flex:1"></span>
           <button class="mini-btn alt" onclick="guideResume()" id="guideResumeBtn" style="display:none">↩ 回到上次進度</button>
         </div>
-        <p class="guide-hint">💡 鍵盤快速鍵：← 上一步、→ 下一步、空白鍵 暫停／自動前進。進度會自動儲存在此瀏覽器，下次開啟可繼續。畫面會同步顯示目前這條線（亮色粗線）。</p>
+        <p class="guide-hint">💡 鍵盤快速鍵：← 上一步、→ 下一步、空白鍵 暫停／自動前進。進度會自動儲存在此瀏覽器，下次開啟可繼續。圓盤上常駐顯示釘子編號，輪到的點位會<strong style="color:#ff2d4f">變紅放大</strong>（起點為<strong style="color:#d98a00">金色</strong>），並以亮色粗線顯示目前這條線。</p>
       </div>
     </div>
   </div>
@@ -1517,13 +1517,57 @@ function renderGuideCanvas() {
     replayCtx.moveTo(from.x, from.y);
     replayCtx.lineTo(to.x, to.y);
     replayCtx.stroke();
-    // 標記起訖釘
+    // 標記起訖釘：起點金色、目標紅色
     replayCtx.fillStyle = '#f5a623';
-    [from, to].forEach(n => { replayCtx.beginPath(); replayCtx.arc(n.x, n.y, 5, 0, Math.PI * 2); replayCtx.fill(); });
+    replayCtx.beginPath(); replayCtx.arc(from.x, from.y, 5, 0, Math.PI * 2); replayCtx.fill();
+    replayCtx.fillStyle = '#ff2d4f';
+    replayCtx.beginPath(); replayCtx.arc(to.x, to.y, 5, 0, Math.PI * 2); replayCtx.fill();
   }
+  drawGuideLabels(s.from, s.to);
   ['rPlayBtn', 'rPauseBtn', 'rStopBtn', 'rEndBtn'].forEach(id => $(id).disabled = false);
   $('replaySeek').disabled = false;
   $('replaySeek').max = replaySteps.length;
+}
+
+// 圓盤釘子編號：平時小字常駐，輪到的點位變紅放大（起點金色）
+function drawGuideLabels(fromId, toId) {
+  if (!replayCtx) return;
+  const N = replayNails.length;
+  const every = Math.max(1, Math.round(N / 36)); // 一般編號約顯示 36 個，避免擁擠
+  const isLightBg = $('replayColor').value === 'black_on_white';
+  const haloColor = isLightBg ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.85)';
+  replayCtx.textAlign = 'center';
+  replayCtx.textBaseline = 'middle';
+
+  replayNails.forEach((n, i) => {
+    const isFrom = (i === fromId), isTo = (i === toId);
+    if (!isFrom && !isTo && i % every !== 0) return;
+    const dx = n.x - SIZE / 2, dy = n.y - SIZE / 2;
+    const len = Math.hypot(dx, dy) || 1;
+    const off = (isFrom || isTo) ? 26 : 14; // 朝圓心內縮，避免被邊緣裁切
+    const x = n.x - (dx / len) * off, y = n.y - (dy / len) * off;
+
+    if (isFrom || isTo) {
+      const color = isTo ? '#ff2d4f' : '#f5a623';
+      // 數字：放大加粗＋描邊光暈確保深淺底都清楚
+      replayCtx.font = 'bold 22px sans-serif';
+      replayCtx.strokeStyle = haloColor;
+      replayCtx.lineWidth = 5;
+      replayCtx.strokeText(i, x, y);
+      replayCtx.fillStyle = color;
+      replayCtx.fillText(i, x, y);
+      // 釘位外圈光環
+      replayCtx.strokeStyle = color;
+      replayCtx.lineWidth = 2;
+      replayCtx.beginPath();
+      replayCtx.arc(n.x, n.y, 9, 0, Math.PI * 2);
+      replayCtx.stroke();
+    } else {
+      replayCtx.font = '9px sans-serif';
+      replayCtx.fillStyle = isLightBg ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.42)';
+      replayCtx.fillText(i, x, y);
+    }
+  });
 }
 
 // 鍵盤快速鍵（施作導引顯示中且不在輸入框時）
