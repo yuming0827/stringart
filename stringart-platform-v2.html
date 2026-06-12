@@ -330,19 +330,20 @@
       </div>
       <div class="panel-body">
         <div class="param-group">
-          <label for="nailCount">釘子數量</label>
-          <div class="param-row">
-            <input type="range" id="nailCount" min="100" max="300" value="180" step="10" oninput="updateVal('nailCount','nailCountVal')">
-            <div class="param-val" id="nailCountVal">180</div>
+          <label>釘子數量</label>
+          <div style="display:flex;justify-content:space-between;align-items:center;background:#f0f7ff;border-radius:8px;padding:0.6rem 0.9rem">
+            <span style="font-size:0.85rem;color:#1565c0">固定最佳化參數</span>
+            <strong style="font-size:1.1rem;color:var(--accent)">300 根</strong>
           </div>
+          <p class="param-hint">經基準測試最佳化的固定值，確保材料包與機台規格一致</p>
         </div>
         <div class="param-group">
-          <label for="stringCount">纏線步驟數</label>
+          <label for="stringCount">纏線步驟上限</label>
           <div class="param-row">
-            <input type="range" id="stringCount" min="500" max="4000" value="2000" step="100" oninput="updateVal('stringCount','stringCountVal')">
-            <div class="param-val" id="stringCountVal">2000</div>
+            <input type="range" id="stringCount" min="500" max="3500" value="3500" step="100" oninput="updateVal('stringCount','stringCountVal')">
+            <div class="param-val" id="stringCountVal">3500</div>
           </div>
-          <p class="param-hint">步驟越多細節越豐富，施作時間也越長</p>
+          <p class="param-hint">演算法會在品質收斂時自動停止，通常遠低於上限</p>
         </div>
         <div class="param-group">
           <label for="shape">畫面形狀</label>
@@ -373,11 +374,12 @@
         <details class="adv">
           <summary>進階調整（透明度／亮度／對比）</summary>
           <div class="param-group">
-            <label for="lineOpacity">線條透明度（疊加濃度）</label>
+            <label for="lineOpacity">線條濃度（每條線的疊加深度）</label>
             <div class="param-row">
-              <input type="range" id="lineOpacity" min="10" max="60" value="30" step="5" oninput="updateVal('lineOpacity','lineOpacityVal')">
-              <div class="param-val" id="lineOpacityVal">30</div>
+              <input type="range" id="lineOpacity" min="5" max="30" value="8" step="1" oninput="updateVal('lineOpacity','lineOpacityVal')">
+              <div class="param-val" id="lineOpacityVal">8</div>
             </div>
+            <p class="param-hint">預設 8 為基準測試最佳值；越低細節越細膩、步數越多</p>
           </div>
           <div class="param-group">
             <label for="briAdj">亮度調整</label>
@@ -507,7 +509,7 @@
               <option value="auto">自動從步驟偵測</option>
               <option value="manual">手動指定</option>
             </select>
-            <input type="number" id="replayNailCount" value="180" min="60" max="400" style="width:84px;display:none" aria-label="手動指定釘子數量">
+            <input type="number" id="replayNailCount" value="300" min="60" max="400" style="width:84px;display:none" aria-label="手動指定釘子數量">
           </div>
         </div>
         <div class="param-group">
@@ -756,6 +758,8 @@
 const WAITLIST_ENDPOINT = '';
 const CONTACT_EMAIL = 'fysh711536@gmail.com';
 const SIZE = 600;               // 內部運算解析度
+const NAIL_COUNT = 300;         // 固定釘子數（基準測試 240–300 中的最佳值，與材料包/機台規格綁定）
+const MAX_STRINGS = 3500;       // 纏線步驟硬上限
 const SECONDS_PER_STEP = 3;     // 施作時間估算
 const MAX_FILE_MB = 20;
 
@@ -915,32 +919,45 @@ function buildDarknessMap(img, lineColorMode, shape) {
 // ============================================================
 // 生成核心：Web Worker（不卡 UI、可即時取消）
 // ============================================================
+// 殘差貪婪演算法（基準測試最佳化版）：
+// 1. 以「目標暗度 − 已畫線量」的殘差評分，過疊部分以 0.5 權重懲罰 → 不會無限疊黑
+// 2. 單線收益上限 = fade → 避免一條線吃掉全部分數
+// 3. 連續 8 步收益低於門檻即判定品質收斂，自動停止（自然找出 ≤ 上限的最佳步數）
 const WORKER_SRC = `
 self.onmessage = function (ev) {
   const { darkness: buf, size, nails, stringCount, fade, skip } = ev.data;
-  const darkness = new Float32Array(buf);
+  const target = new Float32Array(buf);
+  const drawn = new Float32Array(size * size);
   const N = nails.length;
+  const OVERDRAW_W = 0.5;             // 過疊懲罰權重
+  const STOP_EPS = fade * 0.04;       // 收斂門檻
+  const STOP_PATIENCE = 8;            // 連續低收益步數
 
-  function lineScore(x0, y0, x1, y1) {
+  function lineBenefit(x0, y0, x1, y1) {
     let dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
     let sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx - dy;
     let sum = 0, cnt = 0;
     while (true) {
-      if (x0 >= 0 && x0 < size && y0 >= 0 && y0 < size) { sum += darkness[y0 * size + x0]; cnt++; }
+      if (x0 >= 0 && x0 < size && y0 >= 0 && y0 < size) {
+        const p = y0 * size + x0;
+        const r = target[p] - drawn[p];
+        sum += r > fade ? fade : (r >= 0 ? r : r * OVERDRAW_W);
+        cnt++;
+      }
       if (x0 === x1 && y0 === y1) break;
       const e2 = 2 * err;
       if (e2 > -dy) { err -= dy; x0 += sx; }
       if (e2 < dx)  { err += dx; y0 += sy; }
     }
-    return cnt ? sum / cnt : 0;
+    return cnt ? sum / cnt : -Infinity;
   }
-  function lineSubtract(x0, y0, x1, y1) {
+  function lineApply(x0, y0, x1, y1) {
     let dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
     let sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx - dy;
     while (true) {
       if (x0 >= 0 && x0 < size && y0 >= 0 && y0 < size) {
         const p = y0 * size + x0;
-        darkness[p] = Math.max(0, darkness[p] - fade);
+        drawn[p] = Math.min(1, drawn[p] + fade);
       }
       if (x0 === x1 && y0 === y1) break;
       const e2 = 2 * err;
@@ -949,21 +966,27 @@ self.onmessage = function (ev) {
     }
   }
 
-  let cur = 0, prevNail = -1, chunk = [];
+  let cur = 0, prevNail = -1, chunk = [], lowCount = 0;
   for (let iter = 0; iter < stringCount; iter++) {
-    let best = -1, bestScore = -1;
+    let best = -1, bestScore = -Infinity;
     for (let j = 0; j < N; j++) {
       const diff = Math.abs(j - cur);
       if (Math.min(diff, N - diff) < skip) continue;
       if (j === prevNail) continue; // 避免立即來回同一條線
-      const s = lineScore(nails[cur].x, nails[cur].y, nails[j].x, nails[j].y);
+      const s = lineBenefit(nails[cur].x, nails[cur].y, nails[j].x, nails[j].y);
       if (s > bestScore) { bestScore = s; best = j; }
     }
-    if (best < 0 || bestScore <= 0.004) {
+    if (best < 0) {
       self.postMessage({ type: 'done', steps: chunk, early: true, done: iter });
       return;
     }
-    lineSubtract(nails[cur].x, nails[cur].y, nails[best].x, nails[best].y);
+    if (bestScore <= STOP_EPS) {
+      if (++lowCount >= STOP_PATIENCE) {
+        self.postMessage({ type: 'done', steps: chunk, early: true, done: iter });
+        return;
+      }
+    } else lowCount = 0;
+    lineApply(nails[cur].x, nails[cur].y, nails[best].x, nails[best].y);
     chunk.push(cur, best);
     prevNail = cur;
     cur = best;
@@ -985,8 +1008,8 @@ function startGeneration() {
   if (genWorker) return;
 
   resultSteps = [];
-  const nailCount = parseInt($('nailCount').value);
-  const stringCount = parseInt($('stringCount').value);
+  const nailCount = NAIL_COUNT;
+  const stringCount = Math.min(parseInt($('stringCount').value), MAX_STRINGS);
   const shape = $('shape').value;
   const lineOpacity = parseInt($('lineOpacity').value);
   const lineColorMode = $('lineColor').value;
@@ -1064,8 +1087,8 @@ function finishGeneration(early) {
   $('progressBar').style.width = '100%';
   $('progressPct').textContent = '100%';
   $('progressText').textContent = early
-    ? `✅ 影像細節已用盡，提前完成（共 ${resultSteps.length.toLocaleString()} 步）`
-    : `✅ 生成完成！共 ${resultSteps.length.toLocaleString()} 步`;
+    ? `✅ 品質已收斂，自動停止於最佳步數（共 ${resultSteps.length.toLocaleString()} 步）`
+    : `✅ 生成完成！共 ${resultSteps.length.toLocaleString()} 步（達步驟上限）`;
   showStats();
   renderStepsTable();
   resetGenButtons();
